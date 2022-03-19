@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">SimpleCamera</string>
+    <string name="switch_camera">SWITCH</string>
+    <string name="camera_activity">PICTURE</string>
+    <string name="video_activity">VIDEO</string>
+    <string name="video_activity_stop">STOP</string>
+</resources>
