@@ -18,15 +18,31 @@ import androidx.lifecycle.LifecycleOwner;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
-import android.content.ContentValues;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
+import android.graphics.Bitmap;
+import android.graphics.drawable.Drawable;
+import android.media.ThumbnailUtils;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.provider.MediaStore;
+import android.util.Log;
 import android.view.View;
 import android.widget.Button;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 import com.google.common.util.concurrent.ListenableFuture;
+
+import org.apache.commons.io.FilenameUtils;
+
+import java.io.File;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Date;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 
@@ -34,19 +50,30 @@ public class MainActivity extends AppCompatActivity implements
         View.OnClickListener,
         ImageAnalysis.Analyzer {
 
-    Button btnSwitchCamera, btnTakePicture, btnRecord;
+    Button btnTakePicture;
+    TextView useCamera, useVideo;
+    ImageView btnSwitchCamera, viewData;
+
     private ListenableFuture<ProcessCameraProvider> cameraProviderFuture;
     private int LENS_SELECTOR = CameraSelector.LENS_FACING_BACK;
+    private LinearLayout linearLayout;
     private PreviewView previewView;
     private ImageCapture imageCapture;
+    private VideoCapture videoCapture;
+    private ImageAnalysis imageAnalysis;
 
     private static final int CAMERA_REQUEST_CODE = 10;
     private static final int AUDIO_REQUEST_CODE = 10;
-    private VideoCapture videoCapture;
+
+    private String[] functions_name = {"PICTURE", "VIDEO"};
+    private int functions_id = 0;
+    private ArrayList<TextView> functions_text = new ArrayList<TextView>();
+
+    private File imgDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "SimpleCamera");
+    private File videoDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "SimpleCamera");
 
     // 0 for stop, 1 for start
     private int video_state = 0;
-    private ImageAnalysis imageAnalysis;
 
     private boolean hasCameraPermission() {
         return ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
@@ -95,6 +122,7 @@ public class MainActivity extends AppCompatActivity implements
                 );
     }
 
+    @SuppressLint("ClickableViewAccessibility")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -102,8 +130,11 @@ public class MainActivity extends AppCompatActivity implements
 
         btnSwitchCamera = findViewById(R.id.btnSwitchCamera);
         btnTakePicture = findViewById(R.id.btnTakePicture);
-        btnRecord = findViewById(R.id.btnRecord);
+        viewData = findViewById(R.id.viewData);
+        useCamera = findViewById(R.id.useCamera);
+        useVideo = findViewById(R.id.useVideo);
         previewView = findViewById(R.id.previewView);
+        linearLayout = findViewById(R.id.linearLayout);
 
         if (!hasCameraPermission()) {
             requestPermission();
@@ -117,11 +148,77 @@ public class MainActivity extends AppCompatActivity implements
             requestAudioPermission();
         }
 
+        functions_text.add(useCamera);
+        functions_text.add(useVideo);
+
+        useCamera.setOnClickListener(this);
+        useVideo.setOnClickListener(this);
         btnSwitchCamera.setOnClickListener(this);
         btnTakePicture.setOnClickListener(this);
-        btnRecord.setOnClickListener(this);
+        linearLayout.setOnTouchListener(new OnSwipeTouchListener(this) {
+            @Override
+            public void onSwipeRight() {
+                if(video_state == 1) { return ; }
+                if (functions_id > 0) {
+                    swipeRight();
+                }
+            }
 
+            @Override
+            public void onSwipeLeft() {
+                if(video_state == 1) { return ; }
+                if (functions_id < functions_name.length) {
+                    swipeLeft();
+                }
+            }
+
+            @Override
+            public void onSwipeTop() { }
+
+            @Override
+            public void onSwipeBottom() { }
+        });
+
+        // include startProcessCamera()
+        toSelectFunction();
+
+        // show the image gallery
+        searchAndSetData();
+    }
+
+    private void toSelectFunction() {
+        btnTakePicture.setText(functions_name[functions_id]);
         startProcessCamera();
+        ColorStateList csl = null;
+        for(int i = 0; i < functions_text.size(); i++) {
+            if(i == functions_id) {
+                csl = getResources().getColorStateList(R.color.white);
+                functions_text.get(i).setTextColor(csl);
+            } else {
+                csl = getResources().getColorStateList(R.color.gray);
+                functions_text.get(i).setTextColor(csl);
+            }
+        }
+    }
+
+    private void swipeRight() {
+        functions_id -= 1;
+        toSelectFunction();
+    }
+
+    private void swipeLeft() {
+        functions_id += 1;
+        toSelectFunction();
+    }
+
+    private void startUsingCamera() {
+        functions_id = 0;
+        toSelectFunction();
+    }
+
+    private void startUsingVideo() {
+        functions_id = 1;
+        toSelectFunction();
     }
 
     protected void startProcessCamera() {
@@ -165,7 +262,15 @@ public class MainActivity extends AppCompatActivity implements
         cameraProvider.unbindAll();
 
         // bind all above to the life cycle
-        cameraProvider.bindToLifecycle((LifecycleOwner) this, cameraSelector, preview, imageCapture, videoCapture);
+        switch(functions_id) {
+            default:
+            case 1:
+                cameraProvider.bindToLifecycle((LifecycleOwner) this, cameraSelector, preview, videoCapture);
+                break;
+            case 0:
+                cameraProvider.bindToLifecycle((LifecycleOwner) this, cameraSelector, preview, imageCapture, imageAnalysis);
+                break;
+        }
     }
 
     private Executor getExecutor() {
@@ -180,18 +285,28 @@ public class MainActivity extends AppCompatActivity implements
                 switchCamera();
                 break;
             case R.id.btnTakePicture:
-                createPicture();
-                break;
-            case R.id.btnRecord:
-                if (video_state == 0) {
-                    btnRecord.setText(R.string.video_activity_stop);
-                    video_state = 1;
-                    recordVideo();
-                } else {
-                    btnRecord.setText(R.string.video_activity);
-                    video_state = 0;
-                    videoCapture.stopRecording();
+                switch(functions_id) {
+                    case 0:
+                        createPicture();
+                        break;
+                    case 1:
+                        if (video_state == 0) {
+                            btnTakePicture.setText(R.string.video_activity_stop);
+                            video_state = 1;
+                            recordVideo();
+                        } else {
+                            btnTakePicture.setText(R.string.video_activity);
+                            video_state = 0;
+                            videoCapture.stopRecording();
+                        }
+                        break;
                 }
+                break;
+            case R.id.useCamera:
+                startUsingCamera();
+                break;
+            case R.id.useVideo:
+                startUsingVideo();
                 break;
         }
     }
@@ -206,15 +321,107 @@ public class MainActivity extends AppCompatActivity implements
         startProcessCamera();
     }
 
+    private void searchAndSetData() {
+        String[] picNames;
+        String[] videoNames;
+        File picFile = new File(imgDir.getAbsolutePath());
+        picNames = picFile.list();
+        File videoFile = new File(videoDir.getAbsolutePath());
+        videoNames = videoFile.list();
+
+        Arrays.sort(picNames);
+        Arrays.sort(videoNames);
+
+        ArrayList<String> fileNames = new ArrayList<String>();
+        if(picNames.length > 0) {
+            fileNames.add(picNames[picNames.length-1]);
+        }
+        if(videoNames.length > 0) {
+            fileNames.add(videoNames[videoNames.length-1]);
+        }
+        Collections.sort(fileNames, Collections.reverseOrder());
+
+        File filePath = null;
+        if(fileNames.size() > 0) {
+            String ext_name = FilenameUtils.getExtension(fileNames.get(0));
+            switch(ext_name) {
+                case "jpeg":
+                case "jpg":
+                    filePath = new File(imgDir, fileNames.get(0));
+                    setImageDataView(filePath.getAbsolutePath());
+                    break;
+                case "mp4":
+                    filePath = new File(videoDir, fileNames.get(0));
+                    setVideoDataView(filePath.getAbsolutePath());
+                    break;
+            }
+        } else {
+            // the default png if no data available
+            String uri = "@drawable/gallery";
+            int imageResource = getResources().getIdentifier(uri, null, getPackageName());
+            Drawable res = getResources().getDrawable(imageResource);
+            viewData.setImageDrawable(res);
+        }
+    }
+
+    @SuppressLint("NewApi")
+    private Bitmap createImageThumbNail(String path) {
+        return ThumbnailUtils.createImageThumbnail(path, MediaStore.Images.Thumbnails.MINI_KIND);
+    }
+
+    private void setImageDataView(String abs_file_path) {
+        File file = new File(abs_file_path);
+        if(!file.exists()) { return; }
+        Bitmap bitmap = createImageThumbNail(abs_file_path);
+        viewData.setImageBitmap(bitmap);
+    }
+
+    private Bitmap createVideoThumbNail(String path){
+        return ThumbnailUtils.createVideoThumbnail(path, MediaStore.Video.Thumbnails.MINI_KIND);
+    }
+
+    private void setVideoDataView(String abs_file_path) {
+        File file = new File(abs_file_path);
+        if(!file.exists()) { return; }
+        Bitmap bitmap = createVideoThumbNail(abs_file_path);
+        viewData.setImageBitmap(bitmap);
+    }
+
+    private void createPicture() {
+        if(! imgDir.exists()) {
+            imgDir.mkdir();
+        }
+        String timestamp = String.valueOf(new Date().getTime());
+        File file = new File(imgDir, timestamp + ".jpg");
+
+        imageCapture.takePicture(
+                new ImageCapture.OutputFileOptions.Builder(file).build(),
+                getExecutor(),
+                new ImageCapture.OnImageSavedCallback() {
+                    @Override
+                    public void onImageSaved(@NonNull ImageCapture.OutputFileResults outputFileResults) {
+//                        Toast.makeText(MainActivity.this, "The image has been saved successfully.", Toast.LENGTH_SHORT).show();
+//                        Log.d("OnImageSaved", file.getAbsolutePath());
+                        setImageDataView(file.getAbsolutePath());
+                    }
+
+                    @Override
+                    public void onError(@NonNull ImageCaptureException exception) {
+                        Toast.makeText(MainActivity.this, "Error on saving the image: " + exception.getMessage(), Toast.LENGTH_LONG).show();
+                    }
+                }
+        );
+    }
+
     @SuppressLint("RestrictedApi")
     private void recordVideo() {
         if (videoCapture != null) {
 
-            long timestamp = System.currentTimeMillis();
-
-            ContentValues contentValues = new ContentValues();
-            contentValues.put(MediaStore.MediaColumns.DISPLAY_NAME, timestamp);
-            contentValues.put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4");
+            if(! videoDir.exists()) {
+                videoDir.mkdir();
+            }
+            String timestamp = String.valueOf(new Date().getTime());
+            File file = new File(videoDir, timestamp + ".mp4");
 
             try {
                 if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -230,16 +437,14 @@ public class MainActivity extends AppCompatActivity implements
                 }
 
                 videoCapture.startRecording(
-                        new VideoCapture.OutputFileOptions.Builder(
-                                getContentResolver(),
-                                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                                contentValues
-                        ).build(),
+                        new VideoCapture.OutputFileOptions.Builder(file).build(),
                         getExecutor(),
                         new VideoCapture.OnVideoSavedCallback() {
                             @Override
                             public void onVideoSaved(@NonNull VideoCapture.OutputFileResults outputFileResults) {
-                                Toast.makeText(MainActivity.this, "The video has been saved successfully.", Toast.LENGTH_SHORT).show();
+//                                Toast.makeText(MainActivity.this, "The video has been saved successfully.", Toast.LENGTH_SHORT).show();
+//                                Log.d("onVideoSaved", file.getAbsolutePath());
+                                setVideoDataView(file.getAbsolutePath());
                             }
 
                             @Override
@@ -254,39 +459,10 @@ public class MainActivity extends AppCompatActivity implements
         }
     }
 
-    private void createPicture() {
-        long timestamp = System.currentTimeMillis();
-
-        ContentValues contentValues = new ContentValues();
-        contentValues.put(MediaStore.MediaColumns.DISPLAY_NAME, timestamp);
-        contentValues.put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg");
-
-        imageCapture.takePicture(
-                new ImageCapture.OutputFileOptions.Builder(
-                        getContentResolver(),
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        contentValues
-                ).build(),
-                getExecutor(),
-                new ImageCapture.OnImageSavedCallback() {
-                    @Override
-                    public void onImageSaved(@NonNull ImageCapture.OutputFileResults outputFileResults) {
-                        Toast.makeText(MainActivity.this, "The image has been saved successfully.", Toast.LENGTH_SHORT).show();
-                    }
-
-                    @Override
-                    public void onError(@NonNull ImageCaptureException exception) {
-                        Toast.makeText(MainActivity.this, "Error on saving the image: " + exception.getMessage(), Toast.LENGTH_LONG).show();
-                    }
-                }
-        );
-    }
-
     @Override
     public void analyze(@NonNull ImageProxy image) {
         // preprocessing the image
-
-
         image.close();
     }
+
 }

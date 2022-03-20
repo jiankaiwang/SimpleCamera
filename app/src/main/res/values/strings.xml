@@ -4,4 +4,7 @@
     <string name="camera_activity">PICTURE</string>
     <string name="video_activity">VIDEO</string>
     <string name="video_activity_stop">STOP</string>
+    <string name="gallery">GALLERY</string>
+    <string name="use_camera">CAMERA</string>
+    <string name="use_video">VIDEO</string>
 </resources>
